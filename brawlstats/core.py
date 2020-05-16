@@ -51,7 +51,7 @@ class Client:
         self.loop = options.get('loop', asyncio.get_event_loop()) if self.is_async else None
         self.connector = options.get('connector')
         # If the request fails on specific codes, we can retry the request.
-        self.retry = options.get('retry')
+        self.retry = options.get('retry', 0)
 
         # Session and request options
         self.session = options.get('session') or (
@@ -115,7 +115,7 @@ class Client:
             log.debug('GET {} got result from cache.'.format(url))
         return data
 
-    def _aretry_on_exception(self, url, retry_count=0):
+    def _retry_on_exception(self, url, retry_count=0):
         try:
             data = self._request(url)
         except RequestError as e:
@@ -123,7 +123,7 @@ class Client:
             if e.code == 429 and self.retry and retry_count < retry_count:
                 # Wait 5 seconds before retry
                 time.sleep(5)
-                data = await self._aretry_on_exception(url, retry_count + 1)
+                data = self._retry_on_exception(url, retry_count + 1)
 
         return data
 
@@ -183,9 +183,15 @@ class Client:
         if self.prevent_ratelimit:
             # Use asyncio-throttle to limit the requests
             async with self.throttler:
-                data = await self._arequest(url)
+                if self.retry > 0:
+                    data = await self._aretry_on_exception(url)
+                else:
+                    data = await self._arequest(url)
         else:
-            data = await self._arequest(url)
+            if self.retry > 0:
+                data = await self._aretry_on_exception(url)
+            else:
+                data = await self._arequest(url)
 
         if model == Constants:
             if key:
@@ -202,7 +208,7 @@ class Client:
             # Calls the async function
             return self._aget_model(url, model=model, key=key)
 
-        data = self._request(url)
+        data = self._retry_on_exception(url) if self.retry > 0 else self._request(url)
         if self.prevent_ratelimit:
             time.sleep(0.1)
 
