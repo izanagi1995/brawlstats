@@ -9,7 +9,7 @@ import requests
 from asyncio_throttle import Throttler
 from cachetools import TTLCache
 
-from .errors import Forbidden, NotFoundError, RateLimitError, ServerError, UnexpectedError
+from .errors import Forbidden, NotFoundError, RateLimitError, ServerError, UnexpectedError, RequestError
 from .models import BattleLog, Club, Constants, Members, Player, Ranking
 from .utils import API, bstag, typecasted
 
@@ -50,6 +50,8 @@ class Client:
         self.is_async = is_async
         self.loop = options.get('loop', asyncio.get_event_loop()) if self.is_async else None
         self.connector = options.get('connector')
+        # If the request fails on specific codes, we can retry the request.
+        self.retry = options.get('retry')
 
         # Session and request options
         self.session = options.get('session') or (
@@ -111,6 +113,30 @@ class Client:
             return None
         if self.debug:
             log.debug('GET {} got result from cache.'.format(url))
+        return data
+
+    def _aretry_on_exception(self, url, retry_count=0):
+        try:
+            data = self._request(url)
+        except RequestError as e:
+            # Throttle
+            if e.code == 429 and self.retry and retry_count < retry_count:
+                # Wait 5 seconds before retry
+                time.sleep(5)
+                data = await self._aretry_on_exception(url, retry_count + 1)
+
+        return data
+
+    async def _retry_on_exception(self, url, retry_count=0):
+        try:
+            data = await self._arequest(url)
+        except RequestError as e:
+            # Throttle
+            if e.code == 429 and self.retry and retry_count < retry_count:
+                # Wait 5 seconds before retry
+                await asyncio.sleep(5)
+                data = await self._aretry_on_exception(url, retry_count + 1)
+
         return data
 
     async def _arequest(self, url):
