@@ -6,14 +6,18 @@ import time
 
 import aiohttp
 import requests
-from asyncio_throttle import Throttler
 from cachetools import TTLCache
+from aiolimiter import AsyncLimiter
 
 from .errors import Forbidden, NotFoundError, RateLimitError, ServerError, UnexpectedError, RequestError
 from .models import BattleLog, Club, Constants, Members, Player, Ranking
 from .utils import API, bstag, typecasted
 
 log = logging.getLogger(__name__)
+
+async def limited(until):
+    duration = int(round(until - time.time()))
+    print('Rate limited, sleeping for {:d} seconds'.format(duration))
 
 
 class Client:
@@ -59,7 +63,7 @@ class Client:
         )
         self.timeout = timeout
         self.prevent_ratelimit = options.get('prevent_ratelimit', False)
-        self.throttler = Throttler(rate_limit=3200, period=60)
+        self.throttler = AsyncLimiter(max_rate=30, time_period=1)
         self.api = API(options.get('base_url'), version=1)
 
         self.debug = options.get('debug', False)
@@ -127,17 +131,19 @@ class Client:
 
         return data
 
-    async def _retry_on_exception(self, url, retry_count=0):
+    async def _aretry_on_exception(self, url, retry_count=0):
         try:
-            data = await self._arequest(url)
+            return await self._arequest(url)
         except RequestError as e:
             # Throttle
-            if e.code == 429 and self.retry and retry_count < retry_count:
+            if e.code == 429 and self.retry and retry_count < self.retry:
                 # Wait 5 seconds before retry
                 await asyncio.sleep(5)
-                data = await self._aretry_on_exception(url, retry_count + 1)
+                return await self._aretry_on_exception(url, retry_count + 1)
+            else:
+                raise e
 
-        return data
+        return None
 
     async def _arequest(self, url):
         """Async method to request a url."""
